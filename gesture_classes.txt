@@ -1,0 +1,5 @@
+0: drag
+1: drag and hold
+2: hold and drag
+3: pinch
+4: scroll
