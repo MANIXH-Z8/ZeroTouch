@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>ZeroTouch — Gesture Control (Browser Demo)</title>
+  <style>
+    body {
+      margin: 0;
+      background: #050608;
+      color: #eaeaea;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      height: 100vh;
+    }
+    #container {
+      position: relative;
+      width: 800px;
+      max-width: 95vw;
+      margin-top: 20px;
+    }
+    #video, #canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: auto;
+      border-radius: 12px;
+    }
+    #overlay {
+      margin-top: 12px;
+      font-size: 0.9rem;
+      opacity: 0.8;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h2>ZeroTouch — Gesture Control (Browser Demo)</h2>
+  <div id="overlay">
+    <div>🙌 Gestures:</div>
+    <div>• <b>Point</b> → Move virtual cursor</div>
+    <div>• <b>Palm open</b> → Scroll up (green bar)</div>
+    <div>• <b>Fist</b> → Scroll down</div>
+    <div>• <b>Pinch</b> (thumb + index) → Click flash</div>
+  </div>
+
+  <div id="container">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+  <script>
+    const videoEl = document.getElementById('video');
+    const canvasEl = document.getElementById('canvas');
+    const ctx = canvasEl.getContext('2d');
+
+    let cursorX = 0;
+    let cursorY = 0;
+    let scrollSim = 50;  // 0–100
+    let clickFlash = 0;
+
+    function setupCamera() {
+      return new Promise((resolve, reject) => {
+        navigator.mediaDevices.getUserMedia({ video: true })
+          .then(stream => {
+            videoEl.srcObject = stream;
+            videoEl.onloadedmetadata = () => {
+              videoEl.play();
+              resolve();
+            };
+          })
+          .catch(err => reject(err));
+      });
+    }
+
+    function dist(a, b) {
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    function onResults(results) {
+      // Resize canvas to match video
+      canvasEl.width = videoEl.videoWidth;
+      canvasEl.height = videoEl.videoHeight;
+      const w = canvasEl.width;
+      const h = canvasEl.height;
+
+      // Draw video frame
+      ctx.save();
+      ctx.clearRect(0, 0, w, h);
+      ctx.drawImage(videoEl, 0, 0, w, h);
+
+      let gesture = "No Hand";
+
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const lm = results.multiHandLandmarks[0];
+
+        // Draw hand skeleton
+        window.drawConnectors(ctx, lm, window.HAND_CONNECTIONS, {color: "#39f", lineWidth: 3});
+        window.drawLandmarks(ctx, lm, {color: "#0f0", lineWidth: 1});
+
+        // Finger extension
+        const fingerTips = [8, 12, 16, 20];
+        const fingerDips = [6, 10, 14, 18];
+        let extendedCount = 0;
+        for (let i = 0; i < fingerTips.length; i++) {
+          if (lm[fingerTips[i]].y < lm[fingerDips[i]].y) extendedCount++;
+        }
+        const indexUp = lm[8].y < lm[6].y;
+        const pinchDist = dist(lm[4], lm[8]);
+
+        // Gesture logic (same semantics as desktop)
+        if (pinchDist < 0.06) {
+          gesture = "Pinch → Click";
+          clickFlash = 6;
+        } else if (extendedCount >= 4) {
+          gesture = "Palm → Scroll Up";
+          scrollSim = Math.min(100, scrollSim + 2);
+        } else if (extendedCount === 0) {
+          gesture = "Fist → Scroll Down";
+          scrollSim = Math.max(0, scrollSim - 2);
+        } else if (indexUp && extendedCount === 1) {
+          gesture = "Point → Cursor Move";
+          cursorX = lm[8].x * w;
+          cursorY = lm[8].y * h;
+        } else {
+          gesture = "Neutral";
+        }
+      }
+
+      // Draw virtual cursor
+      ctx.beginPath();
+      ctx.arc(cursorX, cursorY, 12, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(255, 255, 0, 0.8)";
+      ctx.fill();
+      ctx.closePath();
+
+      // Click flash
+      if (clickFlash > 0) {
+        ctx.beginPath();
+        ctx.arc(cursorX, cursorY, 28, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(255, 80, 80, 0.8)";
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.closePath();
+        clickFlash--;
+      }
+
+      // Scroll bar
+      const barX = w - 30;
+      const barY = 30;
+      const barH = h - 60;
+      ctx.strokeStyle = "#666";
+      ctx.lineWidth = 3;
+      ctx.strokeRect(barX, barY, 18, barH);
+      const fillH = (scrollSim / 100) * barH;
+      ctx.fillStyle = "#00ff72";
+      ctx.fillRect(barX + 2, barY + barH - fillH, 14, fillH);
+
+      // Gesture text
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "18px system-ui";
+      ctx.fillText(gesture, 16, 32);
+
+      ctx.restore();
+    }
+
+    async function main() {
+      await setupCamera();
+
+      const hands = new Hands({
+        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+      });
+      hands.setOptions({
+        maxNumHands: 1,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.6,
+        minTrackingConfidence: 0.6,
+      });
+      hands.onResults(onResults);
+
+      const camera = new Camera(videoEl, {
+        onFrame: async () => {
+          await hands.send({ image: videoEl });
+        },
+        width: 640,
+        height: 480,
+      });
+      camera.start();
+    }
+
+    main().catch(err => {
+      console.error(err);
+      alert("Could not access webcam: " + err.message);
+    });
+  </script>
+</body>
+</html>
